@@ -15,6 +15,43 @@ export const BRAIN_CAPTURE_POLICY = [
 	"NEVER store anything a connected tool owns as the live source of truth — PR or review status, issue/ticket state, assignees, deploy or build status, current metrics or counts, calendar or roster state, document contents. Fetch these live from the tool every time; storing them only plants data that goes stale fast and then reads as fact when it is wrong. The ONLY exception is a fact whose tool is not connected for this workspace — and even then, prefer getting it connected.",
 ].join("\n")
 
+/**
+ * supermemory rejects a container tag's entityContext over this many characters
+ * (400 `too_big`), so every builder below must stay under it.
+ */
+export const ENTITY_CONTEXT_MAX_CHARS = 1500
+
+// The capture policy condensed for entity contexts. The full policy above runs
+// ~1,700 characters, over the limit on its own; it stays in the channel
+// distiller's prompt, which has no limit.
+const BRAIN_CAPTURE_POLICY_COMPACT = [
+	"Keep durable knowledge permanently: decisions and their reasoning, who owns what, commitments with status/blockers, resolved answers to recurring questions, constraints.",
+	"Infer from repeated behavior; a pattern need not be stated.",
+	"Give transient or single-observation facts (current status, this week, live counts) a forget horizon. When a fact recurs or is superseded ('now', 'no longer', 'moved to'), update the existing memory instead of adding another.",
+	"Date time-bound facts as YYYY-MM-DD.",
+	"Skip banter, secrets/credentials and speculation.",
+	"Never store what a connected tool owns live (PR/ticket/deploy status, assignees, metrics, calendars, document contents): it goes stale and then reads as fact. Only if that tool isn't connected.",
+].join("\n")
+
+/**
+ * Join entity-context lines, fitting the one free-text line (an org's About,
+ * a channel's purpose) into whatever room the fixed lines leave. The fixed
+ * lines alone fit by construction; profile-config.test.ts pins that.
+ */
+function joinEntityContext(
+	before: string[],
+	optional: { prefix: string; text?: string | null },
+	after: string[],
+): string {
+	const fixed = [...before, ...after].join("\n")
+	const text = optional.text?.trim()
+	if (!text) return fixed
+	const room = ENTITY_CONTEXT_MAX_CHARS - fixed.length - 1 - optional.prefix.length
+	if (room <= 0) return fixed
+	const fitted = text.length <= room ? text : `${text.slice(0, room - 1).trimEnd()}…`
+	return [...before, `${optional.prefix}${fitted}`, ...after].join("\n")
+}
+
 export const BRAIN_MEMORY_BUCKETS: ProfileBucketDef[] = [
 	{
 		key: "preferences",
@@ -81,19 +118,17 @@ export function buildBrainSharedEntityContext(params: {
 	domain?: string | null
 	about?: string | null
 }): string {
-	const header = `Organization: ${params.orgName}${params.domain ? ` (${params.domain})` : ""}. This is the shared Company Brain for everyone in this org — the team's collective memory, fed continuously from Slack.`
-	const aboutLine = params.about?.trim() ? `About: ${params.about.trim()}` : ""
-	return [
-		header,
-		aboutLine,
-		"Scope every memory to this organization — its people, teams, projects, customers, decisions, and product/domain terms.",
-		"When a fact is clearly and primarily about one teammate, save it with that teammate's stable person_<slack_user_id> memory tag.",
-		"A full profile isn't provided yet: infer the org's products, structure, and vocabulary from ingested content, and treat recurring names (people, repos, products, customers, projects) as this org's entities.",
-		"Hold exactly ONE current answer per subject. When a new fact changes who owns or is responsible for something, or updates a subject's status/role/decision already in memory (a new owner, a handoff, 'now', 'no longer', 'moved to'), UPDATE that subject's existing memory (emit an updates relation) instead of storing a parallel fact — the related memories are provided for exactly this.",
-		BRAIN_CAPTURE_POLICY,
-	]
-		.filter(Boolean)
-		.join("\n")
+	const header = `Organization: ${params.orgName}${params.domain ? ` (${params.domain})` : ""}. The shared Company Brain for this org: the team's collective memory, fed from Slack.`
+	return joinEntityContext(
+		[header],
+		{ prefix: "About: ", text: params.about },
+		[
+			"Scope memories to this org's people, teams, projects, customers, decisions and terms. Infer its products and vocabulary from content; treat recurring names as its entities.",
+			"A fact mainly about one teammate gets their person_<slack_user_id> tag.",
+			"Keep ONE current answer per subject: when ownership, status, role or a decision changes, update that subject's existing memory (emit an updates relation) from the related memories provided, never a parallel fact.",
+			BRAIN_CAPTURE_POLICY_COMPACT,
+		],
+	)
 }
 
 /** Personal-DM tag (`user_{userId}`) entity context. */
@@ -117,16 +152,13 @@ export function buildBrainPrivateChannelEntityContext(params: {
 	const label = params.channelName?.trim()
 		? `the private channel #${params.channelName.trim()}`
 		: "this private channel"
-	const purposeLine = params.purpose?.trim()
-		? `Purpose: ${params.purpose.trim()}`
-		: ""
-	return [
-		`This is ${label}.`,
-		purposeLine,
-		"Capture company-relevant knowledge scoped to this channel's members and topics. When a fact is clearly about one teammate, save it with that teammate's stable person_<slack_user_id> memory tag.",
-		"Do NOT leak this into the shared brain.",
-		BRAIN_CAPTURE_POLICY,
-	]
-		.filter(Boolean)
-		.join("\n")
+	return joinEntityContext(
+		[`This is ${label}.`],
+		{ prefix: "Purpose: ", text: params.purpose },
+		[
+			"Capture company-relevant knowledge scoped to this channel's members and topics. When a fact is clearly about one teammate, save it with that teammate's stable person_<slack_user_id> memory tag.",
+			"Do NOT leak this into the shared brain.",
+			BRAIN_CAPTURE_POLICY_COMPACT,
+		],
+	)
 }
